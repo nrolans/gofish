@@ -7,6 +7,7 @@ package common
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 // Collection represents a collection of entity references.
@@ -60,6 +61,7 @@ func GetCollection(c Client, uri string) (*Collection, error) {
 
 // CollectionError is used for collecting errors when working with collections
 type CollectionError struct {
+	sync.Mutex
 	Failures map[string]error
 }
 
@@ -72,7 +74,15 @@ func NewCollectionError() *CollectionError {
 }
 
 func (cr *CollectionError) Empty() bool {
+	cr.Lock()
+	defer cr.Unlock()
 	return len(cr.Failures) == 0
+}
+
+func (cr *CollectionError) Add(name string, err error) {
+	cr.Lock()
+	defer cr.Unlock()
+	cr.Failures[name] = err
 }
 
 // for associating a linked entity with its error
@@ -82,6 +92,8 @@ type entityError struct {
 }
 
 func (cr *CollectionError) Error() string {
+	cr.Lock()
+	defer cr.Unlock()
 	var entityErrors []entityError
 	for link, err := range cr.Failures {
 		entityErrors = append(entityErrors, entityError{

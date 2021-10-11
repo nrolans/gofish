@@ -5,9 +5,12 @@
 package redfish
 
 import (
+	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/stmcginnis/gofish/common"
+	"golang.org/x/sync/semaphore"
 )
 
 // SoftwareInventory is This Resource contains a single software
@@ -92,19 +95,55 @@ func ListReferencedSoftwareInventories(c common.Client, link string) ([]*Softwar
 		return result, err
 	}
 
+	bp := NewBoundedParallel(2)
+	var lock sync.Mutex
+
 	collectionError := common.NewCollectionError()
 	for _, softwareinventoryLink := range links.ItemLinks {
-		softwareinventory, err := GetSoftwareInventory(c, softwareinventoryLink)
-		if err != nil {
-			collectionError.Failures[softwareinventoryLink] = err
-		} else {
-			result = append(result, softwareinventory)
-		}
+		softwareinventoryLink := softwareinventoryLink
+		bp.Add(1)
+		go bp.Do(func() {
+			softwareinventory, err := GetSoftwareInventory(c, softwareinventoryLink)
+			if err != nil {
+				collectionError.Add(softwareinventoryLink, err)
+			} else {
+				lock.Lock()
+				result = append(result, softwareinventory)
+				lock.Unlock()
+			}
+		})
 	}
+	bp.Wait()
 
 	if collectionError.Empty() {
 		return result, nil
 	}
 
 	return result, collectionError
+}
+
+type BoundedParallel struct {
+	wg  sync.WaitGroup
+	sem *semaphore.Weighted
+}
+
+func NewBoundedParallel(maxInstance int64) *BoundedParallel {
+	return &BoundedParallel{
+		sem: semaphore.NewWeighted(maxInstance),
+	}
+}
+
+func (b *BoundedParallel) Add(n int) {
+	b.wg.Add(n)
+}
+
+func (b *BoundedParallel) Do(fn func()) {
+	defer b.wg.Done()
+	b.sem.Acquire(context.Background(), 1)
+	fn()
+	b.sem.Release(1)
+}
+
+func (b *BoundedParallel) Wait() {
+	b.wg.Wait()
 }
